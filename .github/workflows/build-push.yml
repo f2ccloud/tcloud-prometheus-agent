@@ -1,0 +1,79 @@
+name: Build Docker Image and Push
+
+on:
+  pull_request:
+    paths:
+      - "**"
+      - "!**.md"
+  push:
+    branches:
+      - "**"
+    tags:
+      - '**'
+
+  workflow_dispatch:
+
+concurrency: 
+  group: ${{ github.ref }}
+  cancel-in-progress: true  
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    name: Build Docker Image and Push
+    steps:
+      - uses: actions/checkout@v2
+      - name: Inject slug/short variables
+        uses: rlespinasse/github-slug-action@v3.x
+      - name: Prepare Docker Build
+        id: prepare
+        run: |
+          REGISTRY=${{ secrets.REGISTRY }}
+          DOCKER_IMAGE=${REGISTRY}/f2ccloud/prometheus-agent
+          DOCKER_PLATFORMS=linux/amd64
+          TAG_NAME=${{ env.GITHUB_REF_SLUG }}
+          DOCKER_IMAGE_TAGS="--tag ${DOCKER_IMAGE}:${TAG_NAME}"
+          DOCKER_IMAGE_UI_TAGS="--tag ${DOCKER_IMAGE_UI}:${TAG_NAME}"
+          echo ::set-output name=docker_image::${DOCKER_IMAGE}
+          echo ::set-output name=docker_image_ui::${DOCKER_IMAGE_UI}
+          echo ::set-output name=version::${TAG_NAME}
+          echo ::set-output name=buildx_args::--platform ${DOCKER_PLATFORMS} \
+            --build-arg VERSION=${{ env.GITHUB_REF_SLUG }}-${{ env.GITHUB_SHA_SHORT }} \
+            --build-arg BUILD_DATE=$(date -u +'%Y-%m-%dT%H:%M:%SZ') \
+            --build-arg VCS_REF=${GITHUB_SHA::8} \
+            ${DOCKER_IMAGE_TAGS} \
+            .
+
+      - name: Login to Registry
+        uses: docker/login-action@v1
+        with:
+          registry: ${{ secrets.REGISTRY }}
+          username: ${{ secrets.REGISTRY_USERNAME }}
+          password: ${{ secrets.REGISTRY_PASSWORD }}
+
+      - name: Docker build
+        run: |
+          docker build --output "type=image,push=false" ${{ steps.prepare.outputs.buildx_args }}
+
+      - name: Docker push
+        # 只有tag、定时任务或手动触发时，才push镜像
+        if: ${{ startsWith(github.ref, 'refs/tags/') || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' }}
+        run: |
+          docker push ${{ steps.prepare.outputs.docker_image }}:${{ steps.prepare.outputs.version }}
+          
+      - name: Wechat Work Robot Message
+        uses: fifsky/wechat-work-action@v0.0.1
+        with:
+          # wechat work robot webhook
+          url: ${{ secrets.WECHAT_WEBHOOK }}
+          # message type
+          type: markdown
+          content: |
+            # GitHub 构建通知
+            ## 构建结果
+            > from github action message
+            > ^_^
+            - repository: ${{ github.repository }}
+            - committer: ${{ github.actor }}
+            - compare: [view](${{ github.event.compare }})
+            - job status: ${{ job.status }}
